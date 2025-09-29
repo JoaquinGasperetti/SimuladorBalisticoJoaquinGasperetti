@@ -5,7 +5,7 @@ public class TargetPiece : MonoBehaviour
 {
     Vector3 initialPosition;
     Quaternion initialRotation;
-    public float fallDistanceThreshold = 0.3f; // cuánto se tiene que mover para considerarla derribada
+    public float fallDistanceThreshold = 0.3f; // cuï¿½nto se tiene que mover para considerarla derribada
     public float fallAngleThreshold = 30f; // en grados
 
     bool fallen = false;
@@ -28,7 +28,7 @@ public class TargetPiece : MonoBehaviour
             return;
         }
 
-        // rotación excesiva
+        // rotaciï¿½n excesiva
         float angle = Quaternion.Angle(initialRotation, transform.rotation);
         if (angle > fallAngleThreshold)
         {
@@ -43,7 +43,7 @@ public class TargetPiece : MonoBehaviour
         GameManager.Instance?.OnPieceFallen(this, reason);
     }
 
-    // si la pieza tenía un joint y se rompe, Unity llama a OnJointBreak en el objeto que tenía el joint
+    // si la pieza tenï¿½a un joint y se rompe, Unity llama a OnJointBreak en el objeto que tenï¿½a el joint
     void OnJointBreak(float breakForce)
     {
         if (!fallen)
@@ -53,4 +53,24 @@ public class TargetPiece : MonoBehaviour
     }
 
     public bool IsFallen() => fallen;
+
+    /// <summary>
+    /// Resetea la pieza a su estado inicial (posiciï¿½n/rotaciï¿½n) y marca como no derribada.
+    /// Esto es ï¿½til para reiniciar niveles en runtime.
+    /// </summary>
+    public void ResetState()
+    {
+        fallen = false;
+        transform.position = initialPosition;
+        transform.rotation = initialRotation;
+
+        // si tiene rigidbody, resetear veloc y fuerzas
+        var rb = GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.Sleep();
+        }
+    }
 }

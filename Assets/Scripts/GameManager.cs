@@ -1,140 +1,367 @@
-using UnityEngine;
+using System;
 using System.Text;
+using System.Collections;
 using System.Collections.Generic;
-using TMPro;
+using UnityEngine;
 using UnityEngine.UI;
 
+/// <summary>
+/// GameManager: controla el ciclo del tiro, recopila datos del impacto,
+/// calcula score y muestra el panel de reporte. También envía un reporte
+/// simple a Firebase usando FirebaseService (Proyecto26 RestClient).
+/// 
+/// Comentarios en español rioplatense, tono formal.
+/// </summary>
 public class GameManager : MonoBehaviour
 {
+    // --------------------
+    // Singleton
+    // --------------------
     public static GameManager Instance { get; private set; }
 
-    [Header("Reporte UI")]
-    public GameObject panelReport;
-    public TMP_Text txtScore;
-    public TMP_Text txtReportDetails;
-
-    [Header("Target tracking")]
+    // --------------------
+    // Inspector - referencias de escena
+    // --------------------
+    [Header("Referencias de escena")]
+    [Tooltip("Raíz que contiene todas las TargetPiece como hijos.")]
     public Transform targetsRoot;
 
-    // datos del intento actual
-    GameObject currentProjectile;
-    bool shotFired = false;
-    float shotAngle, shotForce, shotMass;
-    Vector3 shotDir;
-    float shotLaunchTime;
+    [Tooltip("Panel que muestra el reporte final (score + detalles).")]
+    public GameObject panelReport;
 
-    // resultado del primer impacto
-    bool impactRecorded = false;
-    Vector3 impactPoint;
-    Vector3 impactRelativeVelocity;
-    float impactImpulse;
-    float timeOfFlight;
+    [Tooltip("Texto para mostrar el score numérico.")]
+    public Text txtScore;
 
-    // pieces
-    List<TargetPiece> allPieces = new List<TargetPiece>();
-    HashSet<TargetPiece> fallenPieces = new HashSet<TargetPiece>();
+    [Tooltip("Texto para mostrar detalles del reporte (lista/estadísticas).")]
+    public Text txtReportDetails;
 
-    void Awake()
+    [Header("Gameplay")]
+    [Tooltip("Tiempo en segundos que se espera después del impacto antes de evaluar.")]
+    public float waitBeforeEvaluate = 1.5f;
+
+    // --------------------
+    // Firebase (configurar en inspector)
+    // --------------------
+    [Header("Firebase")]
+    [Tooltip("URL de Realtime Database. Ej: https://mi-proyecto-default-rtdb.firebaseio.com/")]
+    public string firebaseDatabaseUrl;
+
+    [Tooltip("Nombre del jugador (opcional). Se usa en el reporte enviado a Firebase).")]
+    public string playerName = "Player";
+
+    // --------------------
+    // Estado interno
+    // --------------------
+    private List<TargetPiece> allPieces = new List<TargetPiece>();
+
+    // Variables para medir el disparo
+    private bool shotFired = false;
+    private bool impactRecorded = false;
+    private float timeOfFlight = 0f;
+    private Vector3 impactPoint = Vector3.zero;
+    private Vector3 impactRelativeVelocity = Vector3.zero;
+    private float impactImpulse = 0f;
+
+    // Control de timeout por si nunca impacta
+    private float maxFlightTime = 10f;
+
+    private Coroutine evaluateCoroutine = null;
+
+    // --------------------
+    // Unity callbacks
+    // --------------------
+    private void Awake()
     {
-        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        // Singleton pattern simple
+        if (Instance != null && Instance != this)
+        {
+            Destroy(this.gameObject);
+            return;
+        }
         Instance = this;
     }
 
-    void Start()
+    private void Start()
     {
-        panelReport.SetActive(false);
-        // encontrar todas las TargetPiece en la escena bajo targetsRoot
+        // Inicialización de lista de piezas a partir de targetsRoot
         if (targetsRoot != null)
         {
             allPieces.Clear();
             foreach (var t in targetsRoot.GetComponentsInChildren<TargetPiece>())
                 allPieces.Add(t);
         }
+
+        // Poner panel de reporte oculto al inicio
+        if (panelReport != null)
+            panelReport.SetActive(false);
+
+        // Asignar URL al servicio de Firebase si se provee
+        if (!string.IsNullOrEmpty(firebaseDatabaseUrl))
+            FirebaseService.DatabaseUrl = firebaseDatabaseUrl;
+        else
+            Debug.LogWarning("[GameManager] firebaseDatabaseUrl no está seteada en el inspector.");
     }
 
-    public void OnShotFired(GameObject projectile, float angle, float force, float mass, Vector3 dir)
+    private void Update()
+    {
+        // Si hay un disparo en curso y todavía no hubo impacto, medimos el tiempo de vuelo
+        if (shotFired && !impactRecorded)
+        {
+            timeOfFlight += Time.deltaTime;
+            // Si supera maxFlightTime, forzamos evaluación para evitar quedarse colgado
+            if (timeOfFlight >= maxFlightTime)
+            {
+                Debug.LogWarning("[GameManager] Tiempo máximo de vuelo alcanzado, evaluando de todos modos.");
+                OnEvaluateAfterImpactTimeout();
+            }
+        }
+    }
+
+    // --------------------
+    // API pública - llamada por LauncherUI / Projectile
+    // --------------------
+
+    /// <summary>
+    /// Llamar cuando se dispare el proyectil (desde LauncherUI o script equivalente).
+    /// Resetea el estado y comienza a contar tiempo de vuelo.
+    /// </summary>
+    public void OnShotFired()
     {
         shotFired = true;
-        currentProjectile = projectile;
-        shotAngle = angle;
-        shotForce = force;
-        shotMass = mass;
-        shotDir = dir;
-        shotLaunchTime = Time.time;
         impactRecorded = false;
-        fallenPieces.Clear();
+        timeOfFlight = 0f;
+        impactPoint = Vector3.zero;
+        impactRelativeVelocity = Vector3.zero;
+        impactImpulse = 0f;
 
-        // refrescar lista de piezas
-        if (targetsRoot != null)
+        // ocultar panel de reporte si había quedado abierto
+        if (panelReport != null)
+            panelReport.SetActive(false);
+
+        // cancelar coroutine anterior si queda alguna
+        if (evaluateCoroutine != null)
         {
-            allPieces.Clear();
-            foreach (var t in targetsRoot.GetComponentsInChildren<TargetPiece>())
-                allPieces.Add(t);
+            StopCoroutine(evaluateCoroutine);
+            evaluateCoroutine = null;
         }
     }
 
-    public void OnProjectileImpact(GameObject projectile, GameObject hitObject, Vector3 point, Vector3 relVel, float impulseMag, float timeOfFlightReceived)
+    /// <summary>
+    /// Sobrecarga usada por LauncherUI que provee información del proyectil.
+    /// </summary>
+    public void OnShotFired(GameObject projectile, float angleDeg, float force, float mass, Vector3 dir)
     {
-        if (!shotFired || impactRecorded) return;
+        // Por compatibilidad con llamadas externas, delegamos al OnShotFired básico
+        OnShotFired();
+        Debug.Log($"[GameManager] Shot fired. projectile={projectile?.name}, angle={angleDeg}, force={force}, mass={mass}");
+    }
 
+    /// <summary>
+    /// Llamar desde Projectile.cs al detectar una colisión válida.
+    /// Se recibe punto de impacto, impulso estimado y velocidad relativa.
+    /// </summary>
+    /// <param name="point">punto del mundo del impacto</param>
+    /// <param name="impulse">valor escalar representando el impulso (puede venir de colisión)</param>
+    /// <param name="relativeVelocity">velocidad relativa en el momento del impacto</param>
+    public void OnProjectileImpact(Vector3 point, float impulse, Vector3 relativeVelocity)
+    {
+        if (!shotFired)
+        {
+            Debug.LogWarning("[GameManager] OnProjectileImpact llamado pero no se detectó shotFired.");
+            // igual podemos aceptar el impacto si viene desde plugin externo
+        }
+
+        // Registrar datos
         impactRecorded = true;
         impactPoint = point;
-        impactRelativeVelocity = relVel;
-        impactImpulse = impulseMag;
-        timeOfFlight = timeOfFlightReceived;
+        impactImpulse = impulse;
+        impactRelativeVelocity = relativeVelocity;
 
-        // a partir de acá, espera N segundos para evaluar derribadas y luego mostrar reporte
-        StartCoroutine(WaitAndEvaluateAndShowReport(2.0f)); // espera 2s para que caigan más piezas
+        // arrancar coroutine para esperar un pequeño delay y evaluar estado de piezas
+        if (evaluateCoroutine != null)
+            StopCoroutine(evaluateCoroutine);
+
+        evaluateCoroutine = StartCoroutine(WaitAndEvaluateAndShowReport(waitBeforeEvaluate));
     }
 
+    /// <summary>
+    /// Sobrecarga que coincide con la llamada desde Projectile (pasa más datos).
+    /// </summary>
+    public void OnProjectileImpact(GameObject projectile, GameObject hitObject, Vector3 point, Vector3 relativeVelocity, float impulseMag, float timeOfFlight)
+    {
+        // Registrar tiempo de vuelo y delegar a la implementación existente
+        this.timeOfFlight = timeOfFlight;
+        OnProjectileImpact(point, impulseMag, relativeVelocity);
+        Debug.Log($"[GameManager] Projectile impact recorded. projectile={projectile?.name}, hit={hitObject?.name}, impulse={impulseMag:F2}, tof={timeOfFlight:F2}");
+    }
+
+    /// <summary>
+    /// Llamada desde TargetPiece cuando una pieza se detecta como derribada.
+    /// </summary>
     public void OnPieceFallen(TargetPiece piece, string reason)
     {
-        if (!fallenPieces.Contains(piece))
-        {
-            fallenPieces.Add(piece);
-            Debug.Log($"Piece fallen: {piece.name} reason: {reason}");
-        }
+        Debug.Log($"[GameManager] Piece fallen: {piece?.name}, reason={reason}");
+        // Por ahora no hacemos más, pero podés agregar tracking o feedback aquí.
     }
 
-    System.Collections.IEnumerator WaitAndEvaluateAndShowReport(float wait)
+    // --------------------
+    // Evaluación y reporte
+    // --------------------
+
+    /// <summary>
+    /// Timeout alternativo si no hubo impacto pero se superó el tiempo máximo de vuelo.
+    /// Esto fuerza evaluación igual (impactPoint quedará en Vector3.zero).
+    /// </summary>
+    private void OnEvaluateAfterImpactTimeout()
     {
+        if (evaluateCoroutine != null)
+            StopCoroutine(evaluateCoroutine);
+
+        evaluateCoroutine = StartCoroutine(WaitAndEvaluateAndShowReport(0f));
+    }
+
+    /// <summary>
+    /// Coroutine que espera (para que las piezas terminen de caer), calcula score,
+    /// muestra el panel con información y envía un reporte a Firebase.
+    /// </summary>
+    private IEnumerator WaitAndEvaluateAndShowReport(float wait)
+    {
+        // Esperar el tiempo para dejar que la física "termine"
         yield return new WaitForSeconds(wait);
 
-        // contar piezas derribadas
+        // Contar piezas derribadas
         int fallenCount = 0;
         foreach (var p in allPieces)
+        {
+            if (p == null) continue;
             if (p.IsFallen()) fallenCount++;
+        }
 
-        // score (ejemplo simple):
-        float score = CalculateScore(fallenCount, impactImpulse, impactRelativeVelocity.magnitude);
+        // Calcular score (implementación simple; podés ajustar fórmula)
+        int score = CalculateScore(fallenCount, impactImpulse, impactRelativeVelocity.magnitude);
 
-        // armar reporte de texto
+        // Armar texto de detalles
         StringBuilder sb = new StringBuilder();
         sb.AppendLine($"Piezas derribadas: {fallenCount} / {allPieces.Count}");
         sb.AppendLine($"Tiempo de vuelo: {timeOfFlight:F2} s");
         sb.AppendLine($"Punto de impacto: {impactPoint.ToString("F3")}");
         sb.AppendLine($"Velocidad relativa en impacto: {impactRelativeVelocity.magnitude:F2} m/s");
         sb.AppendLine($"Impulso de colisión: {impactImpulse:F2} N·s");
-        sb.AppendLine($"Score calculado: {score:F0}");
+        sb.AppendLine($"Score calculado: {score}");
 
-        // mostrar UI
-        panelReport.SetActive(true);
-        txtScore.text = Mathf.RoundToInt(score).ToString();
-        txtReportDetails.text = sb.ToString();
+        // Mostrar UI
+        if (panelReport != null)
+            panelReport.SetActive(true);
 
-        // reset estado básico
+        if (txtScore != null)
+            txtScore.text = score.ToString();
+
+        if (txtReportDetails != null)
+            txtReportDetails.text = sb.ToString();
+
+        // --- Envío del reporte a Firebase ---
+        try
+        {
+            var report = new FirebaseService.ShotReport()
+            {
+                id = Guid.NewGuid().ToString(),
+                playerName = this.playerName ?? "Player",
+                score = score,
+                fallenCount = fallenCount,
+                timeOfFlight = timeOfFlight,
+                impactPoint = new FirebaseService.Vec3(impactPoint),
+                impactImpulse = impactImpulse,
+                impactRelativeVelocity = impactRelativeVelocity.magnitude,
+                timestamp = DateTime.UtcNow.ToString("o") // ISO 8601
+            };
+
+            // Guarda en la ruta "game_reports"
+            FirebaseService.PostShotReport("game_reports", report,
+                onSuccess: () => Debug.Log($"[GameManager] Report subido a Firebase: {report.id}"),
+                onError: (ex) => Debug.LogError($"[GameManager] Error al subir report: {ex.Message}")
+            );
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[GameManager] Excepción preparando report para Firebase: {ex.Message}");
+        }
+
+        // Reset básico de estado de disparo
         shotFired = false;
         impactRecorded = false;
+        evaluateCoroutine = null;
     }
 
-    float CalculateScore(int fallenCount, float impulse, float relVel)
+    /// <summary>
+    /// Método que calcula el score. Fórmula básica que podés modificar:
+    /// - más piezas derribadas -> mayor score
+    /// - mayor impulso -> bonus
+    /// - penaliza tiempo de vuelo largo (opcional)
+    /// </summary>
+    private int CalculateScore(int fallenCount, float impactImpulse, float relativeSpeed)
     {
-        // Ejemplo: ponderacion sencilla
-        float score = fallenCount * 100f;
-        score += Mathf.Clamp(impulse, 0f, 100f) * 2f;
-        score += Mathf.Clamp(relVel, 0f, 50f) * 5f;
-        return score;
+        // Parámetros de tuning
+        float basePerPiece = 100f;           // puntos por pieza
+        float impulseBonusFactor = 5f;       // multiplicador por impulso
+        float speedBonusFactor = 2f;         // multiplicador por velocidad relativa
+        float timePenaltyPerSecond = 2f;     // penalización por segundo de vuelo
+
+        float score = fallenCount * basePerPiece;
+        score += impactImpulse * impulseBonusFactor;
+        score += relativeSpeed * speedBonusFactor;
+        score -= timeOfFlight * timePenaltyPerSecond;
+
+        int finalScore = Mathf.Max(0, Mathf.RoundToInt(score));
+        return finalScore;
     }
 
-    // Podés añadir métodos para exportar los datos a CSV o guardarlos en archivo local si necesitas persistencia.
+    // --------------------
+    // Utilities / debug
+    // --------------------
+
+    /// <summary>
+    /// Forzar recálculo de la lista de piezas (por si cambiaste la escena en runtime).
+    /// </summary>
+    public void RefreshTargetPieces()
+    {
+        allPieces.Clear();
+        if (targetsRoot != null)
+        {
+            foreach (var t in targetsRoot.GetComponentsInChildren<TargetPiece>())
+                allPieces.Add(t);
+        }
+    }
+
+    /// <summary>
+    /// Resetea las piezas (llama a su propio método ResetPiece si existe).
+    /// Este método asume que TargetPiece tiene un método público ResetState (opcional).
+    /// </summary>
+    public void ResetAllPieces()
+    {
+        foreach (var p in allPieces)
+        {
+            if (p == null) continue;
+            try
+            {
+                p.ResetState(); // si tu TargetPiece no tiene este método, no crashea si lo manejás con if
+            }
+            catch (Exception)
+            {
+                // Silenciar si no existe ResetState en TargetPiece
+            }
+        }
+    }
+
+    // --------------------
+    // ON GUI / botones
+    // --------------------
+
+    /// <summary>
+    /// Llamar desde un botón de UI para cerrar el panel de reporte.
+    /// </summary>
+    public void CloseReportPanel()
+    {
+        if (panelReport != null)
+            panelReport.SetActive(false);
+    }
 }
