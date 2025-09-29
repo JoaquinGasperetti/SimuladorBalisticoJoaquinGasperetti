@@ -3,48 +3,52 @@ using UnityEngine.UI;
 
 public class LauncherUI : MonoBehaviour
 {
-    [Header("Referencias UI")]
-    public Slider angleSlider; // 0-80
-    public Slider forceSlider; // 0-1200
+    public Slider angleSlider;
+    public Slider forceSlider;
     public Button fireButton;
-
-    [Header("Launcher refs")]
-    public Transform muzzle; // donde spawn el proyectil
+    public Transform muzzle; // el Muzzle o el objeto que querés girar horizontalmente
     public GameObject projectilePrefab;
+    public bool useAddForce = true;
 
-    [Header("Opciones")]
-    public bool useAddForce = true; // si false usa velocity
+    Quaternion muzzleInitialLocalRot;
 
     void Start()
     {
-        angleSlider.onValueChanged.AddListener(OnAngleSliderChanged);
-        forceSlider.onValueChanged.AddListener(OnForceSliderChanged);
-        fireButton.onClick.AddListener(Fire);
+        if (muzzle != null) muzzleInitialLocalRot = muzzle.localRotation;
+        if (angleSlider != null) angleSlider.onValueChanged.AddListener(OnAngleSliderChanged);
+        if (forceSlider != null) forceSlider.onValueChanged.AddListener(OnForceSliderChanged);
+        if (fireButton != null) fireButton.onClick.AddListener(Fire);
+        if (angleSlider != null) OnAngleSliderChanged(angleSlider.value);
     }
 
-    void OnAngleSliderChanged(float v) { }
+    void OnAngleSliderChanged(float v)
+    {
+        if (muzzle == null) return;
+        // Rotación horizontal: yaw alrededor del eje up (Y) en espacio local del launcher
+        muzzle.localRotation = muzzleInitialLocalRot * Quaternion.AngleAxis(v, Vector3.up);
+        Debug.Log($"[LauncherUI] Yaw -> {v:F1}°");
+    }
 
     void OnForceSliderChanged(float v) { }
 
     public void Fire()
     {
-        float angleDeg = angleSlider.value;
-        float force = forceSlider.value;
+        float angleDeg = angleSlider != null ? angleSlider.value : 0f;
+        float force = forceSlider != null ? forceSlider.value : 0f;
 
-        Vector3 dir = Quaternion.AngleAxis(angleDeg, muzzle.right) * muzzle.forward;
+        // Dirección basada en yaw del muzzle (horizontal). Si querés también un pitch, habría que combinar.
+        Vector3 dir = muzzle.forward.normalized;
         Quaternion rot = Quaternion.LookRotation(dir);
 
         GameObject p = Instantiate(projectilePrefab, muzzle.position, rot);
         Rigidbody rb = p.GetComponent<Rigidbody>();
         if (rb == null) rb = p.AddComponent<Rigidbody>();
-
-        rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
+        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
 
-        float mass = rb.mass;
-
         Projectile proj = p.GetComponent<Projectile>();
-        if (proj != null) proj.Setup(angleDeg, force, mass, useAddForce, dir);
+        float mass = rb.mass;
+        if (proj != null) proj.Setup(0f, force, mass, useAddForce, dir); // angle no se usa para física aquí
 
         GameManager.Instance?.OnShotFired(p, angleDeg, force, mass, dir);
     }
