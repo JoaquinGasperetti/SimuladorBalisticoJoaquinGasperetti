@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 /// <summary>
 /// GameManager: controla el ciclo del tiro, recopila datos del impacto,
@@ -30,10 +31,10 @@ public class GameManager : MonoBehaviour
     public GameObject panelReport;
 
     [Tooltip("Texto para mostrar el score numérico.")]
-    public Text txtScore;
+    public TMP_Text txtScore;
 
     [Tooltip("Texto para mostrar detalles del reporte (lista/estadísticas).")]
-    public Text txtReportDetails;
+    public TMP_Text txtReportDetails;
 
     [Header("Gameplay")]
     [Tooltip("Tiempo en segundos que se espera después del impacto antes de evaluar.")]

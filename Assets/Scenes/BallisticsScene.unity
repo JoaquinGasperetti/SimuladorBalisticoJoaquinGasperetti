@@ -5785,8 +5785,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   targetsRoot: {fileID: 586057565}
   panelReport: {fileID: 1079277579}
-  txtScore: {fileID: 0}
-  txtReportDetails: {fileID: 0}
+  txtScore: {fileID: 675985645}
+  txtReportDetails: {fileID: 1257657825}
   waitBeforeEvaluate: 1.5
   firebaseDatabaseUrl: 'https://Balistico-rtdb.firebaseio.com/ '
   playerName: Player
