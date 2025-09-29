@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Text;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine.UI;
 
 public class GameManager : MonoBehaviour
@@ -9,8 +10,8 @@ public class GameManager : MonoBehaviour
 
     [Header("Reporte UI")]
     public GameObject panelReport;
-    public Text txtScore;
-    public Text txtReportDetails;
+    public TMP_Text txtScore;
+    public TMP_Text txtReportDetails;
 
     [Header("Target tracking")]
     public Transform targetsRoot;
